@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import signal
 import threading
 from time import sleep
-from typing import Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 from sko.GA import GA_TSP
 from nptime import nptime as time
 from datetime import timedelta
@@ -20,11 +20,12 @@ NEED_FULL_STAY_AT_LAST_MARKET = False
 NAME_INDEX = 0
 OPENING_INDEX = 1
 CLOSING_INDEX = 2
+PRINT_ITERATIONS_AND_RUNS = False
 
 
-def parse_time(s: str) -> time:
+def parse_time_as_seconds(s: str) -> int:
     h, m = map(int, s.strip().split(":"))
-    return time(hour=h, minute=m)
+    return m * 60 + h * 3600
 
 
 def format_time(secs: int) -> str:
@@ -48,10 +49,8 @@ def load_markets(path: PathLike) -> pd.DataFrame:
     markets = list()
     for i in range(len(df)):
         name = df.loc[i, "name"]
-        opening = parse_time(df.loc[i, "opening"])
-        opening = opening.to_timedelta().seconds
-        closing = parse_time(df.loc[i, "closing"])
-        closing = closing.to_timedelta().seconds
+        opening = parse_time_as_seconds(df.loc[i, "opening"])
+        closing = parse_time_as_seconds(df.loc[i, "closing"])
         markets.append(Market(name, opening, closing))
     df = pd.DataFrame(markets)
     df.set_index("name", drop=False, inplace=True)
@@ -61,7 +60,6 @@ def load_markets(path: PathLike) -> pd.DataFrame:
 def load_distance_matrix(path: PathLike) -> pd.DataFrame:
     df = pd.read_csv(path)
     df.set_index("name", inplace=True)
-    # df = df.applymap(lambda s: timedelta(seconds=s))
     return df
 
 
@@ -134,7 +132,8 @@ def perform_runs(markets, durations, max_iter: int, num_runs: int) -> PerformRun
     best_route = []
 
     for i in range(num_runs):
-        print(f"Iterations: {max_iter}, Run {i+1}/{num_runs}")
+        if PRINT_ITERATIONS_AND_RUNS:
+            print(f"Iterations: {max_iter}, Run {i+1}/{num_runs}")
         route, _ = ga.run(max_iter)
         current_markets_visited, current_time_wasted = christmas_market(
             route)
@@ -181,7 +180,7 @@ def print_route(route, markets, durations):
             break
 
 
-def plot_runs(max_iters: Sequence[int], markets_visited: Sequence[float]):
+def plot_runs(max_iters: Sequence[int], markets_visited: Sequence[float], show: bool, save_path: Optional[str] = None):
     # plot results
     fig, ax1 = plt.subplots()
     ax1.set_title("Time-constrained travelling Christmas market visitor")
@@ -194,24 +193,28 @@ def plot_runs(max_iters: Sequence[int], markets_visited: Sequence[float]):
     # ax2 = ax1.twinx()
     # ax2.set_xlabel("Iterations")
     # ax2.set_ylabel("Time wasted")
-    # ax2.semilogx(max_iters, time_wasted)
-    plt.show()
+    # ax2.semilogx(max_iters, time_wasted
+    # )
+    if save_path is not None:
+        plt.savefig(save_path)
+        
+    if show:
+        plt.show()
 
 
 def init_worker():
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
-def main():
-    market_data_path = os.path.join("data", "tcmt_data.csv")
-    durations_data_path = os.path.join("data", "tcmt_durations.csv")
-    
+def run(dataset_name: str, market_data_path: PathLike, durations_data_path: PathLike,
+        save_runs: bool, print_route: bool, save_plot_runs: bool, show_plot_runs: bool):
     # Load market list and distance matrix
     markets = np.array(load_markets(market_data_path))
-    durations = np.array(load_distance_matrix(durations_data_path), dtype=np.int32)
+    durations = np.array(load_distance_matrix(
+        durations_data_path), dtype=np.int32)
 
     # run algorithm with different number of iterations
-    max_iters = np.geomspace(1, 100, num=10, dtype=np.int32)
+    max_iters = np.geomspace(1, 4000, num=50, dtype=np.int32)
     num_runs_per_iter = np.full_like(max_iters, 10)
 
     start = datetime.datetime.now()
@@ -246,21 +249,60 @@ def main():
 
     best = max(results, key=lambda x: x.best_route_markets_visited)
     markets_visited = np.array([t.average_markets_visited for t in results])
+
+    if save_runs:
+        # save results to csv file
+        df = pd.DataFrame(np.transpose(np.vstack((max_iters, markets_visited))), columns=[
+            "Iterations", "Markets visited"])
+        os.makedirs(os.path.join("data", "runs"), exist_ok=True)
+        df.to_csv(os.path.join("data", "runs", f"{dataset_name}_runs.csv"), header=True, index=False)
+
+    if show_plot_runs or save_plot_runs:
+        figure_path = None
+        if save_plot_runs:
+            os.makedirs(os.path.join("data", "figures"), exist_ok=True)
+            figure_path = os.path.join("data", "figures", f"{dataset_name}_figure.png")
+            
+        # plot best visited markets against iterations
+        plot_runs(max_iters, markets_visited, show_plot_runs, figure_path)
+
+    if print_route:
+        # print best route
+        best_route = best.best_route
+        assert(np.unique(best_route).shape == best_route.shape)
+        print(f"Best route visites {np.ceil(best_route.shape[0])} markets")
+        print_route(best_route, markets, durations)
+
+
+def main_single():
+    market_data_path = os.path.join("data", "tcmt_data.csv")
+    durations_data_path = os.path.join("data", "tcmt_durations.csv")
+    run("tcmt_default", market_data_path, durations_data_path,
+        save_runs=True, print_route=True, show_plot_runs=True, save_plot_runs=True)
+
+def main_batch():
+    base_path = os.path.join("data", "tcmt_instances")
+    dataset_names = list()
+    market_data_paths = list()
+    durations_data_paths = list()
     
-    # save results to csv file
-    df = pd.DataFrame(np.transpose(np.vstack((max_iters, markets_visited))), columns=[
-        "Iterations", "Markets visited"])
-    df.to_csv(os.path.join("data", "runs.csv"), header=True, index=False)
+    for file in os.listdir(base_path):
+        if "durations" in file:
+            continue
+        
+        stem, ext = os.path.splitext(file)
 
-    # plot best visited markets against iterations
-    plot_runs(max_iters, markets_visited)
+        dataset_names.append(stem)
+        market_data_paths.append(os.path.join(base_path, file))
+        durations_data_paths.append(os.path.join(base_path, f"{stem}_durations.csv"))
+    
+    for name, market_data_path, durations_data_path in zip(dataset_names, market_data_paths, durations_data_paths):
+        print(f"Processing {name}")
+        run(name, market_data_path, durations_data_path,
+            save_runs=True, print_route=False, show_plot_runs=False, save_plot_runs=True)
 
-    # print best route
-    best_route = best.best_route
-    assert(np.unique(best_route).shape == best_route.shape)
-    print(f"Best route visites {np.ceil(best_route.shape[0])} markets")
-    print_route(best_route, markets, durations)
-
+def main():
+    main_batch()
 
 if __name__ == '__main__':
     main()
