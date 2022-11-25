@@ -6,6 +6,7 @@ import pandas as pd;
 import os
 import humanfriendly
 import numpy as np
+import matplotlib.pyplot as plt
 
 TIME_PER_MARKET = timedelta(minutes=30).seconds
 NEED_FULL_STAY_AT_LAST_MARKET = False
@@ -48,8 +49,10 @@ def load_distance_matrix() -> pd.DataFrame:
     # df = df.applymap(lambda s: timedelta(seconds=s))
     return df
 
+# Load market list and distance matrix
 markets = np.array(load_markets())
 durations = np.array(load_distance_matrix(), dtype=np.int32)
+
 name_loc = 0
 opening_loc = 1
 closing_loc = 2
@@ -80,36 +83,68 @@ def christmas_market(p):
         if current_time < opening_time:
             current_time = opening_time
 
-        if current_time < closing_time:
-            # stay for 30 mins or until market is closing
-            current_time += TIME_PER_MARKET
-            if current_time > closing_time:
-                if NEED_FULL_STAY_AT_LAST_MARKET:
-                    current_time = last_exit_time
-                    break
-                else:
-                    current_time = closing_time
-        else:
+        if current_time >= closing_time:
             current_time = last_exit_time
             break
         
+        # stay for 30 mins or until market is closing
+        current_time += TIME_PER_MARKET
+        if current_time > closing_time:
+            if NEED_FULL_STAY_AT_LAST_MARKET:
+                break
+            else:
+                current_time = closing_time
+                markets_visited += 1
+                break
+            
         markets_visited += 1
     
     end_time = current_time
     
     time_wasted = (last_closing_time - first_opening_time) - TIME_PER_MARKET * markets_visited
-        
-    return time_wasted
+    
+    return markets_visited, time_wasted
 
-ga = GA_TSP(func=christmas_market, n_dim=len(markets), size_pop=50, max_iter=500, prob_mut=1)
-best_route, _ = ga.run()
-# best_route = [26, 30, 28, 22, 13,  7,  1,  3,  4,  6, 16, 19,  8, 14, 23, 11, 24,  1, 18, 10, 16, 27, 30, 21, 14,  9,  2, 20,  5, 12, 24, 28]
 
+# define genetic algorithm
+ga = GA_TSP(func=lambda p: christmas_market(p)[1], n_dim=len(markets), size_pop=50, prob_mut=1)
+
+
+# run algorithm with different number of iterations
+max_iters = np.geomspace(1, 4000, num=50, dtype=np.int32)
+markets_visited = np.zeros_like(max_iters, dtype=np.int32)
+
+best = (0, [])
+for i, max_iter in enumerate(max_iters):
+    print(max_iter)
+    route, _ = ga.run(max_iter)
+    markets_visited[i] = christmas_market(route)[0]
+    if markets_visited[i] > best[0]:
+        best = (markets_visited[i], route)
+
+
+# save results to csv file
+df = pd.DataFrame(np.transpose(np.vstack((max_iters, markets_visited))), columns=[
+                  "Iterations", "Markets visited"])
+df.to_csv(os.path.join("data", "runs.csv"), header=True, index=False)
+
+
+# plot results
+plt.figure()
+plt.semilogx(max_iters, markets_visited)
+plt.title("Time-constrained travelling Christmas market visitor")
+plt.xlabel("Iterations")
+plt.ylabel("Markets visited")
+plt.show()
+
+
+# print best route
+best_route = best[1]
 print(f"Best route: {best_route}")
 assert(np.unique(best_route).shape == best_route.shape)
 
 current_time = markets[best_route[0], opening_loc]
-print(f"1. {format_time(current_time)} {markets[best_route[0], name_loc]}")
+print(f"1. {format_time(current_time)} - {markets[best_route[0], name_loc]}")
 for i in range(1, len(best_route)):
     opening_time = markets[best_route[i], opening_loc]
     closing_time = markets[best_route[i], closing_loc]
@@ -124,14 +159,15 @@ for i in range(1, len(best_route)):
     if current_time > closing_time:
         break
 
-    current_time += TIME_PER_MARKET
-    if current_time > closing_time:
-        if NEED_FULL_STAY_AT_LAST_MARKET:
-            break
-        else:
-            current_time = closing_time
+    if current_time + TIME_PER_MARKET > closing_time and NEED_FULL_STAY_AT_LAST_MARKET:
+        break
     
     print(f"\tWalking {format_duration(walking_time)}")
     print(
-        f"{i+1}. {format_time(current_time)}: {markets[best_route[i], name_loc]}")
+        f"{i+1}. {format_time(current_time)} - {markets[best_route[i], name_loc]}")
+
+    current_time += TIME_PER_MARKET
+    
+    if current_time > closing_time:
+        break
 
