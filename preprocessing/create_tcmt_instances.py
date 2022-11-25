@@ -32,16 +32,11 @@ def main(num,opening,closing):
     for i in range(len(df)):
         locations.append([df.loc[i, "lng"], df.loc[i, "lat"]])
 
-    # res = requests.post(osrm_server_walking,
-    #                     data=str({'locations': locations}).replace("'", '"'),  # otherwise api doesn't accept the json
-    #                     headers={'Authorization': api_key, 'Content-Type': 'application/json'})
-    # durations = json.loads(res.text)['durations']
     durations = get_big_distance_matrices(locations)
-    print(durations)
-    input()
     dur_df = pd.DataFrame(durations, columns=df["name"], index=df["name"])
     print(dur_df)
-    dur_df.to_csv('../data/tcmt_instances/tcmt_{0}_{1}-{2}_durations.csv'.format(num, opening, closing), index_label=False)
+    input()
+    dur_df.to_csv('../data/tcmt_instances/tcmt_{0}_{1}-{2}_durations.csv'.format(num, opening, closing))
 
 
 def get_big_distance_matrices(locations):
@@ -53,14 +48,11 @@ def get_big_distance_matrices(locations):
                                       'sources': list(range(i*nrow, min((i+1)*nrow, len(locations))))})
                             .replace("'", '"'),
                             headers={'Authorization': api_key, 'Content-Type': 'application/json'})
-        print(res)
-        print(res.text)
         durations = np.append(durations, json.loads(res.text)['durations'],axis = 0)
     return durations
 
 if __name__ == '__main__':
-    pass
-    #dont
+    main(100,9,23)
     # for i in [100, 200]:
     #     main(i, 9, 23)
     # for i in [5, 10, 20, 50, 100, 200]:
