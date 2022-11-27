@@ -76,6 +76,7 @@ class PerformRunsResult:
     pop_size: int
     mutation_rate: float
     mutation_operator_name: str
+    selection_operator_name: str
 
 
 def perform_runs(markets, durations, max_iter: int, pop_size: int, mutation_operator_name: str, mutation_rate: float, selection_operator_name: str) -> PerformRunsResult:
@@ -150,7 +151,7 @@ def perform_runs(markets, durations, max_iter: int, pop_size: int, mutation_oper
         selection_operator = lambda x: selection.selection_tournament_faster(x, 3)
     elif selection_operator_name == "tournament-5":
         selection_operator = lambda x: selection.selection_tournament_faster(x, 5)
-    elif selection_operator_name == "roulette-2":
+    elif selection_operator_name == "roulette-1":
         selection_operator = selection.selection_roulette_1
     elif selection_operator_name == "roulette-2":
         selection_operator = selection.selection_roulette_2
@@ -175,7 +176,7 @@ def perform_runs(markets, durations, max_iter: int, pop_size: int, mutation_oper
     # TODO note: the runtime would break if used like this for multiple runs
     return PerformRunsResult(markets_visited_per_generation, best_route_markets_visited,
                              best_route, (end - start).total_seconds(), max_iter, pop_size,
-                             mutation_rate, mutation_operator_name)
+                             mutation_rate, mutation_operator_name, selection_operator_name)
 
 
 def print_route(route, markets, durations):
