@@ -1,10 +1,12 @@
 library(ggplot2)
 library(scales)
 library(cowplot)
-
+time <- 0
 for (file in list.files("data/runs", full.names = T))
 {
+
     data <- read.csv(file)
+    time <- time + sum(data$runtimes)
     mplt <- ggplot(data, aes(x = Iterations, y = Markets.visited, col = as.factor(population_size))) +
         scale_x_log10(name = "Iterations per run") +
         scale_color_discrete(name = "population size") +
@@ -26,5 +28,4 @@ for (file in list.files("data/runs", full.names = T))
     ggsave(paste0("data/figures/", gsub("data/runs/|_runs.csv", "", file), "_ggplot.png"), plt)
 
 }
-
-# print(data)
+print(time)
