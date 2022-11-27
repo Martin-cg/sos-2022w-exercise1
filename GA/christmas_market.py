@@ -65,14 +65,13 @@ def load_distance_matrix(path: PathLike) -> pd.DataFrame:
 
 @dataclass
 class PerformRunsResult:
-    average_markets_visited: float
-    average_time_wasted: float
     best_route_markets_visited: int
-    best_route_time_wasted: int
+    best_route_time_wasted: float
     best_route: Sequence[int]
+    runtime: float
 
 
-def perform_runs(markets, durations, max_iter: int, num_runs: int) -> PerformRunsResult:
+def perform_runs(markets, durations, max_iter: int, pop_size: int) -> PerformRunsResult:
     first_opening_time = min(markets[:, OPENING_INDEX])
     last_closing_time = max(markets[:, CLOSING_INDEX])
 
@@ -91,7 +90,7 @@ def perform_runs(markets, durations, max_iter: int, num_runs: int) -> PerformRun
 
             if i > 0:
                 # walk to next destination
-                last_market = p[i-1]
+                last_market = p[i - 1]
                 walking_time = durations[last_market, current_market]
                 current_time += walking_time
 
@@ -118,36 +117,29 @@ def perform_runs(markets, durations, max_iter: int, num_runs: int) -> PerformRun
         end_time = current_time
 
         time_wasted = (last_closing_time - first_opening_time) - \
-            TIME_PER_MARKET * markets_visited
+                      TIME_PER_MARKET * markets_visited
 
         return markets_visited, time_wasted
 
-    ga = GA_TSP(func=lambda p: christmas_market(
-        p)[1], n_dim=len(markets), size_pop=50, prob_mut=1)
-
-    average_markets_visited = 0.0
-    average_time_wasted = 0.0
     best_route_markets_visited = 0
     best_route_time_wasted = 0
     best_route = []
 
-    for i in range(num_runs):
-        if PRINT_ITERATIONS_AND_RUNS:
-            print(f"Iterations: {max_iter}, Run {i+1}/{num_runs}")
-        route, _ = ga.run(max_iter)
-        current_markets_visited, current_time_wasted = christmas_market(
-            route)
-        average_markets_visited += current_markets_visited
-        average_time_wasted += current_time_wasted
-        if current_markets_visited > best_route_markets_visited:
-            best_route_markets_visited = current_markets_visited
-            best_route_time_wasted = current_time_wasted
-            best_route = route
+    ga = GA_TSP(func=lambda p: christmas_market(
+        p)[1], n_dim=len(markets), size_pop=pop_size, prob_mut=1)
+    start = datetime.datetime.now()
+    route, _ = ga.run(max_iter)
+    end = datetime.datetime.now()
+    current_markets_visited, current_time_wasted = christmas_market(
+        route)
+    if current_markets_visited > best_route_markets_visited:
+        best_route_markets_visited = current_markets_visited
+        best_route_time_wasted = current_time_wasted
+        best_route = route
 
-    average_markets_visited /= num_runs
-    average_time_wasted /= num_runs
-
-    return PerformRunsResult(average_markets_visited, average_time_wasted, best_route_markets_visited, best_route_time_wasted, best_route)
+    # TODO note: the runtime would break if used like this for multiple runs
+    return PerformRunsResult(best_route_markets_visited,
+                             best_route_time_wasted, best_route, (end - start).total_seconds())
 
 
 def print_route(route, markets, durations):
@@ -172,7 +164,7 @@ def print_route(route, markets, durations):
 
         print(f"\tWalking {format_duration(walking_time)}")
         print(
-            f"{i+1}. {format_time(current_time)} - {markets[route[i], NAME_INDEX]}")
+            f"{i + 1}. {format_time(current_time)} - {markets[route[i], NAME_INDEX]}")
 
         current_time += TIME_PER_MARKET
 
@@ -197,7 +189,7 @@ def plot_runs(max_iters: Sequence[int], markets_visited: Sequence[float], show: 
     # )
     if save_path is not None:
         plt.savefig(save_path)
-        
+
     if show:
         plt.show()
 
@@ -207,102 +199,110 @@ def init_worker():
 
 
 def run(dataset_name: str, market_data_path: PathLike, durations_data_path: PathLike,
-        save_runs: bool, print_route: bool, save_plot_runs: bool, show_plot_runs: bool):
+        save_runs: bool, show_route: bool, save_plot_runs: bool, show_plot_runs: bool):
     # Load market list and distance matrix
     markets = np.array(load_markets(market_data_path))
     durations = np.array(load_distance_matrix(
         durations_data_path), dtype=np.int32)
 
     # run algorithm with different number of iterations
-    max_iters = np.geomspace(1, 4000, num=50, dtype=np.int32)
-    num_runs_per_iter = np.full_like(max_iters, 10)
+    num_runs_per_iter = 10
+    max_iters = np.repeat(np.unique(np.geomspace(1, 4000, num=50, dtype=np.int32)), num_runs_per_iter)
 
-    start = datetime.datetime.now()
+    result_array = np.empty((0, 4))
+    for pop_size in [50, 100, 150, 200]:
+        start = datetime.datetime.now()
+        with Pool(os.cpu_count() - 1, init_worker) as executor:
+            results = executor.starmap_async(perform_runs, zip(
+                np.full((max_iters.shape[0], markets.shape[0],
+                         markets.shape[1]), markets, dtype="object"),
+                np.full((max_iters.shape[0], durations.shape[0],
+                         durations.shape[1]), durations, dtype="object"),
+                reversed(max_iters),
+                np.full_like(max_iters, pop_size)
+            ), chunksize=1)
+            try:
+                while not results.ready():
+                    sleep(0.5)
+            except KeyboardInterrupt:
+                executor.terminate()
+                executor.join()
+                exit()
+            else:
+                executor.close()
+                executor.join()
 
-    with Pool(os.cpu_count()-1, init_worker) as executor:
-        results = executor.starmap_async(perform_runs, zip(
-            np.full((max_iters.shape[0], markets.shape[0],
-                    markets.shape[1]), markets, dtype="object"),
-            np.full((max_iters.shape[0], durations.shape[0],
-                    durations.shape[1]), durations, dtype="object"),
-            reversed(max_iters),
-            num_runs_per_iter
-        ), chunksize=1)
-        try:
-            while not results.ready():
-                sleep(0.5)
-        except KeyboardInterrupt:
-            executor.terminate()
-            executor.join()
-            exit()
-        else:
-            executor.close()
-            executor.join()
+        # with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        #     results = executor.map(perform_runs, max_iters, num_runs_per_iter)
+        # results = map(perform_runs, max_iters, num_runs_per_iter)
+        results = list(reversed(list(results.get())))
 
-    # with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-    #     results = executor.map(perform_runs, max_iters, num_runs_per_iter)
-    # results = map(perform_runs, max_iters, num_runs_per_iter)
-    results = list(reversed(list(results.get())))
+        end = datetime.datetime.now()
+        print(f"Ran for {format_duration((end - start).seconds)}")
 
-    end = datetime.datetime.now()
-    print(f"Ran for {format_duration((end-start).seconds)}")
+        best = max(results, key=lambda x: x.best_route_markets_visited)
+        markets_visited = np.array([t.best_route_markets_visited for t in results])
+        runtimes = np.array([t.runtime for t in results])
+        result_array = np.vstack((result_array, np.transpose(np.vstack((max_iters, markets_visited, runtimes,
+                                                                        np.repeat(pop_size, len(results)))))))
 
-    best = max(results, key=lambda x: x.best_route_markets_visited)
-    markets_visited = np.array([t.average_markets_visited for t in results])
+        if show_plot_runs or save_plot_runs:
+            figure_path = None
+            if save_plot_runs:
+                os.makedirs(os.path.join("data", "figures"), exist_ok=True)
+                figure_path = os.path.join("data", "figures", f"{dataset_name}_figure.png")
+
+            # plot best visited markets against iterations
+            plot_runs(max_iters, markets_visited, show_plot_runs, figure_path)
+
+        if show_route:
+            # print best route
+            best_route = best.best_route
+            assert (np.unique(best_route).shape == best_route.shape)
+            print(f"Best route visites {np.ceil(best_route.shape[0])} markets")
+            print_route(best_route, markets, durations)
 
     if save_runs:
         # save results to csv file
-        df = pd.DataFrame(np.transpose(np.vstack((max_iters, markets_visited))), columns=[
-            "Iterations", "Markets visited"])
+
+        df = pd.DataFrame(result_array, columns=[
+            "Iterations", "Markets visited", "runtimes", "population_size"])
         os.makedirs(os.path.join("data", "runs"), exist_ok=True)
         df.to_csv(os.path.join("data", "runs", f"{dataset_name}_runs.csv"), header=True, index=False)
-
-    if show_plot_runs or save_plot_runs:
-        figure_path = None
-        if save_plot_runs:
-            os.makedirs(os.path.join("data", "figures"), exist_ok=True)
-            figure_path = os.path.join("data", "figures", f"{dataset_name}_figure.png")
-            
-        # plot best visited markets against iterations
-        plot_runs(max_iters, markets_visited, show_plot_runs, figure_path)
-
-    if print_route:
-        # print best route
-        best_route = best.best_route
-        assert(np.unique(best_route).shape == best_route.shape)
-        print(f"Best route visites {np.ceil(best_route.shape[0])} markets")
-        print_route(best_route, markets, durations)
 
 
 def main_single():
     market_data_path = os.path.join("data", "tcmt_data.csv")
     durations_data_path = os.path.join("data", "tcmt_durations.csv")
     run("tcmt_default", market_data_path, durations_data_path,
-        save_runs=True, print_route=True, show_plot_runs=True, save_plot_runs=True)
+        save_runs=True, show_route=True, show_plot_runs=True, save_plot_runs=True)
+
 
 def main_batch():
     base_path = os.path.join("data", "tcmt_instances")
     dataset_names = list()
     market_data_paths = list()
     durations_data_paths = list()
-    
+
     for file in os.listdir(base_path):
         if "durations" in file:
             continue
-        
+
         stem, ext = os.path.splitext(file)
 
         dataset_names.append(stem)
         market_data_paths.append(os.path.join(base_path, file))
         durations_data_paths.append(os.path.join(base_path, f"{stem}_durations.csv"))
-    
+
     for name, market_data_path, durations_data_path in zip(dataset_names, market_data_paths, durations_data_paths):
         print(f"Processing {name}")
         run(name, market_data_path, durations_data_path,
-            save_runs=True, print_route=False, show_plot_runs=False, save_plot_runs=True)
+            save_runs=True, show_route=False, show_plot_runs=False, save_plot_runs=True)
+
 
 def main():
-    main_batch()
+    main_single()
+
 
 if __name__ == '__main__':
     main()
